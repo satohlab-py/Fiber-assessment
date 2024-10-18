@@ -1,0 +1,121 @@
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
+import os
+
+# 移動平均を計算する関数
+def moving_average(data, window_size):
+    return np.convolve(data, np.ones(window_size)/window_size, mode='same')
+
+# Orthogonality Scoreを計算する関数
+def orthogonality_score(peak1_angle, peak2_angle):
+    angle_diff = abs(peak1_angle - peak2_angle)
+    # 角度差が90度に近いほどスコアが高い
+    score = 1 - abs(angle_diff - 90) / 90
+    return max(0, score)
+
+# Peak-to-Valley Ratioを計算する関数
+def peak_to_valley_ratio(peak1_value, peak2_value, valley_value):
+    peak_avg = (peak1_value + peak2_value) / 2
+    ratio = peak_avg / valley_value
+    return ratio
+
+# カレントフォルダ内のすべてのJPEGファイルを取得
+current_folder = os.getcwd()
+jpeg_files = [f for f in os.listdir(current_folder) if f.endswith('.jpg') or f.endswith('.jpeg')]
+
+# 各JPEGファイルに対して処理を行う
+for jpeg_file in jpeg_files:
+    print(f"Processing {jpeg_file}")
+    
+    # 画像を読み込む
+    image = cv2.imread(jpeg_file, cv2.IMREAD_GRAYSCALE)
+
+    if image is None:
+        print(f"Failed to load image: {jpeg_file}")
+        continue
+
+    # 画像の中央を取得
+    center = (image.shape[1] // 2, image.shape[0] // 2)
+
+    # 半径方向の輝度を集計するための関数
+    def get_mean_brightness_at_angle(image, center, angle):
+        radians = np.deg2rad(angle)
+        radii = np.arange(0, min(center))  # 中心から外周までの半径の範囲
+        
+        # 角度方向に沿ったすべてのピクセルの輝度を平均化
+        brightness_values = []
+        for r in radii:
+            x = int(center[0] + r * np.cos(radians))
+            y = int(center[1] + r * np.sin(radians))
+
+            # 画像の範囲を超える場合、スキップ
+            if 0 <= x < image.shape[1] and 0 <= y < image.shape[0]:
+                brightness_values.append(image[y, x])
+
+        return np.mean(brightness_values) if brightness_values else 0
+
+    # 0度から360度までの角度ごとの輝度を集計
+    angles = np.arange(0, 360)
+    brightness_values = np.array([get_mean_brightness_at_angle(image, center, angle) for angle in angles])
+
+    # 移動平均（前後40点の移動平均）を計算
+    window_size = 40
+    smoothed_values = moving_average(brightness_values, window_size)
+
+    # 30度から220度までの範囲のみに絞ってピークの自動検出
+    angle_range = np.arange(30, 221)
+    smoothed_range = smoothed_values[30:221]
+    original_range = brightness_values[30:221]  # 30度から220度までの元の輝度データ
+    peaks, _ = find_peaks(smoothed_range, distance=30)
+
+    # 最も高い2つのピークを選択
+    if len(peaks) >= 2:
+        top_peak_indices = np.argsort(smoothed_range[peaks])[-2:]
+        peak1_idx = peaks[top_peak_indices[0]]
+        peak2_idx = peaks[top_peak_indices[1]]
+        peak1_angle = angle_range[peak1_idx]
+        peak2_angle = angle_range[peak2_idx]
+        peak1_value = smoothed_range[peak1_idx]
+        peak2_value = smoothed_range[peak2_idx]
+
+        # Orthogonality Scoreを計算
+        ortho_score = orthogonality_score(peak1_angle, peak2_angle)
+        print(f"Orthogonality Score: {ortho_score:.2f}")
+
+        # ピーク間の谷を検出
+        if peak1_idx < peak2_idx:
+            valley_idx = np.argmin(smoothed_range[peak1_idx:peak2_idx]) + peak1_idx
+        else:
+            valley_idx = np.argmin(smoothed_range[peak2_idx:peak1_idx]) + peak2_idx
+        
+        valley_value = smoothed_range[valley_idx]
+        valley_angle = angle_range[valley_idx]
+
+        # Peak-to-Valley Ratioを計算
+        pvr = peak_to_valley_ratio(peak1_value, peak2_value, valley_value)
+        # PVRの対数を取る
+        log_pvr = np.log(pvr)
+        print(f"Log Peak-to-Valley Ratio: {log_pvr:.2f}")
+
+        # プロット
+        plt.plot(angles, brightness_values, label='Original Brightness', color='gray')  # 元のデータをプロット
+        plt.plot(angle_range, smoothed_range, label=f'Moving Average (30°-220°) - {jpeg_file}', linestyle='--', color='red')
+
+        # ピークと谷をプロット
+        plt.scatter([peak1_angle, peak2_angle], [peak1_value, peak2_value], color='blue', label='Peaks')
+        plt.scatter(valley_angle, valley_value, color='red', label='Valley')
+        plt.text(peak1_angle, peak1_value, f'{peak1_angle:.1f}°', fontsize=12, ha='center', color='blue')
+        plt.text(peak2_angle, peak2_value, f'{peak2_angle:.1f}°', fontsize=12, ha='center', color='blue')
+        plt.text(valley_angle, valley_value, f'{valley_angle:.1f}°', fontsize=12, ha='center', color='red')
+
+        # グラフの装飾
+        plt.title(f'Brightness with Peaks and Valley - {jpeg_file}')
+        plt.xlabel('Angle (degrees)')
+        plt.ylabel('Brightness')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+    else:
+        print("Not enough peaks found for evaluation.")
